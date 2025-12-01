@@ -239,7 +239,8 @@ resource "aws_instance" "public_ec2" {
 resource "aws_instance" "front1" {
   ami                    = local.ami
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
+  subnet_id              = aws_subnet.public_subnet.id
+  associate_public_ip_address = true
   vpc_security_group_ids = [aws_security_group.frontend_sg.id]
   key_name               = "ssh-pet"
   tags = { Name = "ec2-frontv1-pet" }
@@ -248,7 +249,8 @@ resource "aws_instance" "front1" {
 resource "aws_instance" "front2" {
   ami                    = local.ami
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
+  subnet_id              = aws_subnet.public_subnet.id
+  associate_public_ip_address = true
   vpc_security_group_ids = [aws_security_group.frontend_sg.id]
   key_name               = "ssh-pet"
   tags = { Name = "ec2-frontv2-pet" }
