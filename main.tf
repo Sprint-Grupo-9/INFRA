@@ -138,6 +138,27 @@ resource "aws_security_group" "frontend_sg" {
   tags = { Name = "frontend-sg" }
 }
 
+resource "aws_security_group" "front_sg" {
+  name   = "front-sg"
+  vpc_id = aws_vpc.pet_vpc.id
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["10.0.0.0/16"]
+  }
+
+  tags = { Name = "front-sg" }
+}
+
 resource "aws_security_group" "backend_sg" {
   name   = "backend-sg"
   vpc_id = aws_vpc.pet_vpc.id
@@ -233,6 +254,8 @@ resource "aws_instance" "public_ec2" {
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.lb_sg.id]
   key_name                    = "ssh-pet"
+  user_data = file("scripts/nginx-lb-userdata.sh")
+  
   tags = { Name = "ec2-publica-pet" }
 }
 
@@ -241,8 +264,10 @@ resource "aws_instance" "front1" {
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.public_subnet.id
   associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.frontend_sg.id]
+  vpc_security_group_ids = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
   key_name               = "ssh-pet"
+  user_data = file("scripts/front-userdata.sh")
+  
   tags = { Name = "ec2-frontv1-pet" }
 }
 
@@ -251,9 +276,41 @@ resource "aws_instance" "front2" {
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.public_subnet.id
   associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.frontend_sg.id]
+  vpc_security_group_ids = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
   key_name               = "ssh-pet"
+  user_data = file("scripts/front-userdata.sh")
+  
   tags = { Name = "ec2-frontv2-pet" }
+}
+
+resource "aws_instance" "front_azul" {
+  ami                         = local.ami
+  instance_type               = "t3.micro"
+  subnet_id                   = aws_subnet.public_subnet.id
+  associate_public_ip_address = true
+  vpc_security_group_ids      = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
+  key_name                    = "ssh-pet"
+
+  user_data = file("${path.module}/scripts/user_data_front_azul.sh")
+
+  tags = {
+    Name = "frontend-azul"
+  }
+}
+
+resource "aws_instance" "front_rosa" {
+  ami                         = local.ami
+  instance_type               = "t3.micro"
+  subnet_id                   = aws_subnet.public_subnet.id
+  associate_public_ip_address = true
+  vpc_security_group_ids      = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
+  key_name                    = "ssh-pet"
+
+  user_data = file("${path.module}/scripts/user_data_front_rosa.sh")
+
+  tags = {
+    Name = "frontend-rosa"
+  }
 }
 
 resource "aws_instance" "back1" {
