@@ -25,7 +25,7 @@ PORT=3000
 HOST=0.0.0.0
 RABBITMQ_URL=amqp://admin:admin@rabbitmq:5672
 RABBITMQ_QUEUE=chatbot_queue
-GROQ_API_KEY=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
+GROQ_API_KEY=*
 CORS_ORIGIN=*
 EOF
 
