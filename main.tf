@@ -8,9 +8,33 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-1"
+  region = var.aws_region
 }
 
+data "aws_ami" "ubuntu" {
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  owners = ["099720109477"] # Canonical
+}
+
+
+data "aws_availability_zones" "available" {}
+
+locals {
+  ami = var.ubuntu_ami != "" ? var.ubuntu_ami : "ami-04b70fa74e45c3917"
+}
+
+# VPC + subnets + IGW + NAT (simple single-AZ)
 resource "aws_vpc" "pet_vpc" {
   cidr_block           = "10.0.0.0/24"
   enable_dns_support   = true
@@ -18,18 +42,18 @@ resource "aws_vpc" "pet_vpc" {
   tags = { Name = "pet-vpc" }
 }
 
-resource "aws_subnet" "public_subnet" {
+resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.pet_vpc.id
   cidr_block              = "10.0.0.0/25"
-  availability_zone       = "us-east-1a"
+  availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
   tags = { Name = "sb-publica-pet" }
 }
 
-resource "aws_subnet" "private_subnet" {
+resource "aws_subnet" "private" {
   vpc_id            = aws_vpc.pet_vpc.id
   cidr_block        = "10.0.0.128/25"
-  availability_zone = "us-east-1a"
+  availability_zone = data.aws_availability_zones.available.names[0]
   tags = { Name = "sb-privada-pet" }
 }
 
@@ -41,12 +65,11 @@ resource "aws_internet_gateway" "igw" {
 resource "aws_eip" "nat_eip" {
   domain = "vpc"
   depends_on = [aws_internet_gateway.igw]
-  tags = { Name = "eip-nat-pet" }
 }
 
 resource "aws_nat_gateway" "natgw" {
   allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.public_subnet.id
+  subnet_id     = aws_subnet.public.id
   tags = { Name = "nat-gateway-pet" }
 }
 
@@ -62,7 +85,7 @@ resource "aws_route" "public_route" {
 }
 
 resource "aws_route_table_association" "rt_assoc_public" {
-  subnet_id      = aws_subnet.public_subnet.id
+  subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.rt_public.id
 }
 
@@ -78,10 +101,11 @@ resource "aws_route" "private_route" {
 }
 
 resource "aws_route_table_association" "rt_assoc_private" {
-  subnet_id      = aws_subnet.private_subnet.id
+  subnet_id      = aws_subnet.private.id
   route_table_id = aws_route_table.rt_private.id
 }
 
+# Security groups
 resource "aws_security_group" "lb_sg" {
   name   = "lb-sg"
   vpc_id = aws_vpc.pet_vpc.id
@@ -89,13 +113,6 @@ resource "aws_security_group" "lb_sg" {
   ingress {
     from_port   = 80
     to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -110,10 +127,11 @@ resource "aws_security_group" "lb_sg" {
   tags = { Name = "lb-sg" }
 }
 
-resource "aws_security_group" "frontend_sg" {
-  name   = "frontend-sg"
+resource "aws_security_group" "front_sg" {
+  name   = "front-sg"
   vpc_id = aws_vpc.pet_vpc.id
 
+  # allow HTTP from LB (nginx LB)
   ingress {
     from_port       = 80
     to_port         = 80
@@ -121,60 +139,27 @@ resource "aws_security_group" "frontend_sg" {
     security_groups = [aws_security_group.lb_sg.id]
   }
 
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
+  # allow internal calls from front to backend (front -> back's 8080)
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "frontend-sg" }
-}
-
-resource "aws_security_group" "front_sg" {
-  name   = "front-sg"
-  vpc_id = aws_vpc.pet_vpc.id
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 8080
-    to_port     = 8080
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
   }
 
   tags = { Name = "front-sg" }
 }
 
-resource "aws_security_group" "backend_sg" {
-  name   = "backend-sg"
+resource "aws_security_group" "back_sg" {
+  name   = "back-sg"
   vpc_id = aws_vpc.pet_vpc.id
 
+  # allow traffic from front SG to backend 8080
   ingress {
     from_port       = 8080
     to_port         = 8080
     protocol        = "tcp"
-    security_groups = [aws_security_group.frontend_sg.id]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    security_groups = [aws_security_group.front_sg.id]
   }
 
   egress {
@@ -184,18 +169,18 @@ resource "aws_security_group" "backend_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "backend-sg" }
+  tags = { Name = "back-sg" }
 }
 
-resource "aws_security_group" "postgres_sg" {
-  name   = "postgres-sg"
+resource "aws_security_group" "db_sg" {
+  name   = "db-sg"
   vpc_id = aws_vpc.pet_vpc.id
 
   ingress {
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
-    security_groups = [aws_security_group.backend_sg.id]
+    security_groups = [aws_security_group.back_sg.id]
   }
 
   egress {
@@ -205,153 +190,133 @@ resource "aws_security_group" "postgres_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = { Name = "postgres-sg" }
+  tags = { Name = "db-sg" }
 }
 
-resource "aws_security_group" "rabbitmq_sg" {
-  name   = "rabbitmq-sg"
-  vpc_id = aws_vpc.pet_vpc.id
-
-  ingress {
-    from_port       = 5672
-    to_port         = 5672
-    protocol        = "tcp"
-    security_groups = [aws_security_group.frontend_sg.id]
+# Templatefile user-data — these files must exist in scripts/
+data "templatefile" "front_userdata" {
+  template = file("${path.module}/scripts/userdata_front.sh")
+  vars = {
+    groq_api_key = var.groq_api_key
+    domain       = var.domain
+    back1_ip     = aws_instance.back1.private_ip
+    back2_ip     = aws_instance.back2.private_ip
+    redis_password = var.redis_password
   }
-
-  ingress {
-    from_port   = 15672
-    to_port     = 15672
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = { Name = "rabbitmq-sg" }
 }
 
-locals {
-  ami = "ami-04b70fa74e45c3917"
+data "templatefile" "back_userdata" {
+  template = file("${path.module}/scripts/userdata_back.sh")
+  vars = {
+    db_private_ip = aws_instance.db.private_ip
+    db_name       = var.db_name
+    db_user       = var.db_user
+    db_pass       = var.db_pass
+    backend_image = var.backend_java_image
+  }
 }
 
-resource "aws_instance" "public_ec2" {
+data "templatefile" "nginx_userdata" {
+  template = file("${path.module}/scripts/userdata_nginx.sh")
+  vars = {
+    front1_ip = aws_instance.front1.private_ip
+    front2_ip = aws_instance.front2.private_ip
+  }
+}
+
+data "templatefile" "db_userdata" {
+  template = file("${path.module}/scripts/userdata_db.sh")
+  vars = {
+    db_name = var.db_name
+    db_user = var.db_user
+    db_pass = var.db_pass
+  }
+}
+
+# Instances
+
+# LB (public)
+resource "aws_instance" "lb" {
   ami                         = local.ami
-  instance_type               = "t2.micro"
-  subnet_id                   = aws_subnet.public_subnet.id
+  instance_type               = var.instance_type
+  subnet_id                   = aws_subnet.public.id
   associate_public_ip_address = true
   vpc_security_group_ids      = [aws_security_group.lb_sg.id]
-  key_name                    = "ssh-pet"
-  user_data = file("scripts/nginx-lb-userdata.sh")
-  
-  tags = { Name = "ec2-publica-pet" }
+  key_name                    = var.key_name
+
+  user_data = data.templatefile.nginx_userdata.rendered
+
+  tags = { Name = "nginx-lb" }
 }
 
-resource "aws_instance" "front1" {
-  ami                    = local.ami
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public_subnet.id
-  associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
-  key_name               = "ssh-pet"
-  user_data = file("scripts/front-userdata.sh")
-  
-  tags = { Name = "ec2-frontv1-pet" }
-}
-
-resource "aws_instance" "front2" {
-  ami                    = local.ami
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public_subnet.id
-  associate_public_ip_address = true
-  vpc_security_group_ids = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
-  key_name               = "ssh-pet"
-  user_data = file("scripts/front-userdata.sh")
-  
-  tags = { Name = "ec2-frontv2-pet" }
-}
-
-resource "aws_instance" "front_azul" {
-  ami                         = local.ami
-  instance_type               = "t3.micro"
-  subnet_id                   = aws_subnet.public_subnet.id
-  associate_public_ip_address = true
-  vpc_security_group_ids      = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
-  key_name                    = "ssh-pet"
-
-  user_data = file("${path.module}/scripts/user_data_front_azul.sh")
-
-  tags = {
-    Name = "frontend-azul"
-  }
-}
-
-resource "aws_instance" "front_rosa" {
-  ami                         = local.ami
-  instance_type               = "t3.micro"
-  subnet_id                   = aws_subnet.public_subnet.id
-  associate_public_ip_address = true
-  vpc_security_group_ids      = [aws_security_group.frontend_sg.id, aws_security_group.front_sg.id]
-  key_name                    = "ssh-pet"
-
-  user_data = file("${path.module}/scripts/user_data_front_rosa.sh")
-
-  tags = {
-    Name = "frontend-rosa"
-  }
-}
-
+# Backends (private)
 resource "aws_instance" "back1" {
   ami                    = local.ami
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
-  vpc_security_group_ids = [aws_security_group.backend_sg.id]
-  key_name               = "ssh-pet"
-  tags = { Name = "ec2-backv1-pet" }
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  vpc_security_group_ids = [aws_security_group.back_sg.id]
+  key_name               = var.key_name
+
+  user_data = data.templatefile.back_userdata.rendered
+
+  tags = { Name = "backend-1" }
 }
 
 resource "aws_instance" "back2" {
   ami                    = local.ami
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
-  vpc_security_group_ids = [aws_security_group.backend_sg.id]
-  key_name               = "ssh-pet"
-  tags = { Name = "ec2-backv2-pet" }
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  vpc_security_group_ids = [aws_security_group.back_sg.id]
+  key_name               = var.key_name
+
+  user_data = data.templatefile.back_userdata.rendered
+
+  tags = { Name = "backend-2" }
 }
 
-resource "aws_instance" "bd" {
+# Fronts (private) - each runs monolith (frontend + rabbit + local backend)
+resource "aws_instance" "front1" {
   ami                    = local.ami
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_subnet.id
-  vpc_security_group_ids = [aws_security_group.postgres_sg.id]
-  key_name               = "ssh-pet"
-  tags = { Name = "ec2-bd-pet" }
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  associate_public_ip_address = false
+  vpc_security_group_ids = [aws_security_group.front_sg.id]
+  key_name               = var.key_name
+
+  user_data = data.templatefile.front_userdata.rendered
+
+  depends_on = [aws_instance.back1, aws_instance.back2]
+
+  tags = { Name = "frontend-1" }
 }
 
-output "public_instance_ip" {
-  value = aws_instance.public_ec2.public_ip
+resource "aws_instance" "front2" {
+  ami                    = local.ami
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  associate_public_ip_address = false
+  vpc_security_group_ids = [aws_security_group.front_sg.id]
+  key_name               = var.key_name
+
+  user_data = data.templatefile.front_userdata.rendered
+
+  depends_on = [aws_instance.back1, aws_instance.back2]
+
+  tags = { Name = "frontend-2" }
 }
 
-output "front_private_ips" {
-  value = [aws_instance.front1.private_ip, aws_instance.front2.private_ip]
+# Database instance (private)
+resource "aws_instance" "db" {
+  ami                    = local.ami
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.private.id
+  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  key_name               = var.key_name
+
+  user_data = data.templatefile.db_userdata.rendered
+
+  tags = { Name = "postgres-db" }
 }
 
-output "back_private_ips" {
-  value = [aws_instance.back1.private_ip, aws_instance.back2.private_ip]
-}
 
-output "bd_private_ip" {
-  value = aws_instance.bd.private_ip
-}
+
