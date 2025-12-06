@@ -23,7 +23,8 @@ variable "instance_type" {
 
 variable "groq_api_key" {
   type = string
-  default = "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"
+  default = ""
+  description = "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"
 }
 
 variable "domain" {

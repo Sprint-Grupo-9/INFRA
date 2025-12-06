@@ -193,44 +193,34 @@ resource "aws_security_group" "db_sg" {
   tags = { Name = "db-sg" }
 }
 
-# Templatefile user-data — these files must exist in scripts/
-data "templatefile" "front_userdata" {
-  template = file("${path.module}/scripts/userdata_front.sh")
-  vars = {
-    groq_api_key = var.groq_api_key
-    domain       = var.domain
-    back1_ip     = aws_instance.back1.private_ip
-    back2_ip     = aws_instance.back2.private_ip
+# Locals for rendered user-data scripts
+locals {
+  front_userdata = templatefile("${path.module}/scripts/userdata_front.sh", {
+    groq_api_key   = var.groq_api_key
+    domain         = var.domain
+    back1_ip       = aws_instance.back1.private_ip
+    back2_ip       = aws_instance.back2.private_ip
     redis_password = var.redis_password
-  }
-}
+  })
 
-data "templatefile" "back_userdata" {
-  template = file("${path.module}/scripts/userdata_back.sh")
-  vars = {
+  back_userdata = templatefile("${path.module}/scripts/userdata_back.sh", {
     db_private_ip = aws_instance.db.private_ip
     db_name       = var.db_name
     db_user       = var.db_user
     db_pass       = var.db_pass
     backend_image = var.backend_java_image
-  }
-}
+  })
 
-data "templatefile" "nginx_userdata" {
-  template = file("${path.module}/scripts/userdata_nginx.sh")
-  vars = {
+  nginx_userdata = templatefile("${path.module}/scripts/userdata_nginx.sh", {
     front1_ip = aws_instance.front1.private_ip
     front2_ip = aws_instance.front2.private_ip
-  }
-}
+  })
 
-data "templatefile" "db_userdata" {
-  template = file("${path.module}/scripts/userdata_db.sh")
-  vars = {
+  db_userdata = templatefile("${path.module}/scripts/userdata_db.sh", {
     db_name = var.db_name
     db_user = var.db_user
     db_pass = var.db_pass
-  }
+  })
 }
 
 # Instances
@@ -244,7 +234,7 @@ resource "aws_instance" "lb" {
   vpc_security_group_ids      = [aws_security_group.lb_sg.id]
   key_name                    = var.key_name
 
-  user_data = data.templatefile.nginx_userdata.rendered
+  user_data = local.nginx_userdata
 
   tags = { Name = "nginx-lb" }
 }
@@ -257,7 +247,7 @@ resource "aws_instance" "back1" {
   vpc_security_group_ids = [aws_security_group.back_sg.id]
   key_name               = var.key_name
 
-  user_data = data.templatefile.back_userdata.rendered
+  user_data = local.back_userdata
 
   tags = { Name = "backend-1" }
 }
@@ -269,7 +259,7 @@ resource "aws_instance" "back2" {
   vpc_security_group_ids = [aws_security_group.back_sg.id]
   key_name               = var.key_name
 
-  user_data = data.templatefile.back_userdata.rendered
+  user_data = local.back_userdata
 
   tags = { Name = "backend-2" }
 }
@@ -283,7 +273,7 @@ resource "aws_instance" "front1" {
   vpc_security_group_ids = [aws_security_group.front_sg.id]
   key_name               = var.key_name
 
-  user_data = data.templatefile.front_userdata.rendered
+  user_data = local.front_userdata
 
   depends_on = [aws_instance.back1, aws_instance.back2]
 
@@ -298,7 +288,7 @@ resource "aws_instance" "front2" {
   vpc_security_group_ids = [aws_security_group.front_sg.id]
   key_name               = var.key_name
 
-  user_data = data.templatefile.front_userdata.rendered
+  user_data = local.front_userdata
 
   depends_on = [aws_instance.back1, aws_instance.back2]
 
@@ -313,7 +303,7 @@ resource "aws_instance" "db" {
   vpc_security_group_ids = [aws_security_group.db_sg.id]
   key_name               = var.key_name
 
-  user_data = data.templatefile.db_userdata.rendered
+  user_data = local.db_userdata
 
   tags = { Name = "postgres-db" }
 }

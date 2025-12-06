@@ -24,7 +24,7 @@ if [ ! -d "FRONT-REFACTOR" ]; then
 fi
 cd FRONT-REFACTOR/my-react-app || exit 0
 
-# write .env (will be used by the docker-compose in the repo)
+# ensure docker-compose can use the env vars
 cat > .env <<EOF
 NODE_ENV=production
 PORT=3000
@@ -39,29 +39,11 @@ BACKEND_2=http://${back2_ip}:8080
 REDIS_PASSWORD=${redis_password}
 EOF
 
-# ensure nginx has no port conflict: frontend will serve on 3000, we proxy with local nginx to 3000
-cat > /etc/nginx/sites-available/default <<'EOF'
-server {
-    listen 80;
-    server_name _;
+# remove local nginx (LB will proxy instead)
+systemctl stop nginx || true
+systemctl disable nginx || true
 
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-    }
-}
-EOF
-
-nginx -t && systemctl restart nginx
-
-# create a docker-compose if not present (use the repo's compose if exists)
+# create docker-compose if not present
 if [ -f docker-compose.yml ]; then
   /usr/local/bin/docker-compose up -d --remove-orphans
 else
@@ -80,26 +62,21 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: taysonmartins/pet-columbia-front:front-latest
+    image: node:18-alpine
     container_name: frontend-petcolumbia
+    working_dir: /app
     volumes:
-      - ./build:/usr/share/nginx/html:ro
-    expose:
-      - "80"
+      - .:/app
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
     restart: unless-stopped
     depends_on:
       - rabbitmq
-
-  backend_local:
-    image: taysonmartins/pet-columbia-front:backend-latest
-    container_name: backend-petcolumbia-local
-    env_file:
-      - .env
-    expose:
-      - "3000"
-    restart: unless-stopped
-    depends_on:
-      - rabbitmq
+    entrypoint: sh -c "npm install && npm run build && npm start"
 EOF
 
   /usr/local/bin/docker-compose up -d --remove-orphans
