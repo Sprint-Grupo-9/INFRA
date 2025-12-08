@@ -306,6 +306,15 @@ locals {
     ssh_public_key = var.ssh_public_key
   })
 
+  front2_userdata = templatefile("${path.module}/scripts/userdata_front2.sh", {
+    groq_api_key   = var.groq_api_key
+    domain         = var.domain
+    back1_ip       = aws_instance.back1.private_ip
+    back2_ip       = aws_instance.back2.private_ip
+    redis_password = var.redis_password
+    ssh_public_key = var.ssh_public_key
+  })
+
   back_userdata = templatefile("${path.module}/scripts/userdata_back.sh", {
     db_private_ip  = aws_instance.db.private_ip
     db_name        = var.db_name
@@ -402,7 +411,7 @@ resource "aws_instance" "front2" {
   associate_public_ip_address = false
   vpc_security_group_ids      = [aws_security_group.front_sg.id]
   key_name                    = var.key_name
-  user_data                   = local.front_userdata
+  user_data                   = local.front2_userdata
 
   depends_on = [
     aws_instance.back1,
