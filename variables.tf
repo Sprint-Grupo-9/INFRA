@@ -57,3 +57,9 @@ variable "redis_password" {
   default = "redispass"
 }
 
+variable "ssh_public_key" {
+  type = string
+  default = ""
+  description = "SSH public key for accessing private instances from public LB (content of ssh-pet.pub)"
+}
+

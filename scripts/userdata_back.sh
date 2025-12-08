@@ -1,20 +1,66 @@
 #!/bin/bash
-set -e
 
-apt update -y
-apt upgrade -y
-apt install -y docker.io curl git
+# Logging
+exec > >(tee /var/log/userdata.log)
+exec 2>&1
 
-systemctl enable docker
-systemctl start docker
-usermod -aG docker ubuntu
+echo "Starting backend installation..."
 
-# docker-compose (standalone)
-curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
+# Setup SSH key for accessing from other instances
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# Add SSH public key to authorized_keys if provided
+if [ -n "${ssh_public_key}" ]; then
+  echo "Setting up SSH public key..."
+  touch ~/.ssh/authorized_keys
+  chmod 600 ~/.ssh/authorized_keys
+  echo "${ssh_public_key}" >> ~/.ssh/authorized_keys
+fi
+
+echo "Updating system and installing Docker..."
+sudo apt update -y
+sudo apt upgrade -y
+sudo apt install -y git curl ca-certificates gnupg lsb-release
+sudo apt install docker-compose -y
+
+# Install Docker from official repository
+echo "Installing Docker from official repository..."
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update -y
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+echo "Configuring Docker..."
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Wait for Docker daemon to be ready
+echo "Waiting for Docker daemon to be ready..."
+for i in {1..30}; do
+  if sudo docker info > /dev/null 2>&1; then
+    echo "Docker daemon is ready!"
+    break
+  fi
+  echo "Attempt $i/30: Docker daemon not ready, waiting..."
+  sleep 2
+done
+
+sudo usermod -aG docker ubuntu
+
+# Verify docker is accessible
+echo "Verifying Docker access..."
+sudo docker ps || {
+  echo "Docker still not accessible after waiting"
+  exit 1
+}
+echo "Installing Docker Compose standalone..."
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
 
 # build structure
-mkdir -p /opt/Petcolumbia-back
+sudo mkdir -p /opt/Petcolumbia-back
 cd /opt/Petcolumbia-back
 
 # create .env for backend service
@@ -43,7 +89,15 @@ services:
 EOF
 
 # start services
-/usr/local/bin/docker-compose up -d --remove-orphans
+echo "Starting Docker Compose for backend..."
+sudo /usr/local/bin/docker-compose up -d --remove-orphans || {
+  echo "Docker Compose failed, checking logs..."
+  sudo /usr/local/bin/docker-compose logs
+  exit 1
+}
 
-chown -R ubuntu:ubuntu /opt/Petcolumbia-back || true
+echo "Backend services started successfully!"
+sudo /usr/local/bin/docker-compose ps
+
+sudo chown -R ubuntu:ubuntu /opt/Petcolumbia-back || true
 

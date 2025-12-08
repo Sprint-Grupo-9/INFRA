@@ -1,13 +1,31 @@
 #!/bin/bash
-set -e
 
-apt update -y
-apt install -y nginx
+# Logging
+exec > >(tee /var/log/userdata.log)
+exec 2>&1
 
-cat > /etc/nginx/sites-available/default <<'EOF'
+echo "Starting nginx LB installation..."
+
+# Setup SSH key for accessing private instances
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+
+# Add SSH public key to authorized_keys if provided
+if [ -n "${ssh_public_key}" ]; then
+  echo "Setting up SSH public key..."
+  touch ~/.ssh/authorized_keys
+  chmod 600 ~/.ssh/authorized_keys
+  echo "${ssh_public_key}" >> ~/.ssh/authorized_keys
+fi
+
+echo "Updating system and installing nginx..."
+sudo apt update -y
+sudo apt install -y nginx
+
+sudo cat > /etc/nginx/sites-available/default <<'EOF'
 upstream frontend_cluster {
-    server ${front1_ip}:3000 weight=1 max_fails=3 fail_timeout=30s;
-    server ${front2_ip}:3000 weight=1 max_fails=3 fail_timeout=30s;
+    server ${front1_ip}:80 weight=1 max_fails=3 fail_timeout=30s;
+    server ${front2_ip}:80 weight=1 max_fails=3 fail_timeout=30s;
 }
 
 server {
@@ -44,7 +62,20 @@ server {
 }
 EOF
 
-nginx -t
-systemctl restart nginx
-systemctl enable nginx
+sudo nginx -t
+sudo systemctl restart nginx
+sudo systemctl enable nginx
+
+# Wait for frontends to be ready (with retries)
+echo "Waiting for frontends to be ready..."
+for i in {1..60}; do
+  if curl -sf http://${front1_ip}:80 > /dev/null 2>&1 || curl -sf http://${front2_ip}:80 > /dev/null 2>&1; then
+    echo "Frontend is ready!"
+    break
+  fi
+  echo "Attempt $i/60: Frontends not ready yet, retrying in 10s..."
+  sleep 10
+done
+
+echo "Nginx configuration complete"
 
